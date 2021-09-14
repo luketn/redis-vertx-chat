@@ -1,3 +1,8 @@
+/**
+ * Install K6 from here: https://k6.io/docs/getting-started/installation/
+ * Ref: https://betterprogramming.pub/load-testing-websockets-with-k6-feb99bf75798
+ */
+
 import ws from 'k6/ws';
 import {check} from 'k6';
 
