@@ -265,8 +265,8 @@ public class RedisChat {
             return String.format("%s|||%s|||%s|||%s", messageType.name(), id, socketId, message);
         }
 
-        public static ChatMessage fromSerializedString(String ifmMessageString) {
-            String[] parts = ifmMessageString.split("\\|\\|\\|");
+        public static ChatMessage fromSerializedString(String chatMessageString) {
+            String[] parts = chatMessageString.split("\\|\\|\\|");
             return new ChatMessage(ChatMessageType.valueOf(parts[0]), parts[1], parts[2], parts[3]);
         }
 
