@@ -30,12 +30,12 @@ public class RedisChat {
         Thread readerThread = new Thread (() -> {
             try (RedisMessageStream redisMessageReaderStream = new RedisMessageStream("Message Reader")) {
                 while (true) {
-                    List<IfmMessage> messages = redisMessageReaderStream.read();
+                    List<ChatMessage> messages = redisMessageReaderStream.read();
                     if (messages.size() > 0) {
                         if (logger.isTraceEnabled()) {
                             logger.trace(String.format("Received %d messages from Redis:\n%s", messages.size(), messages));
                         }
-                        for (IfmMessage message : messages) {
+                        for (ChatMessage message : messages) {
                             webSocketServer.broadcastMessage(message);
                         }
                     } else {
@@ -62,7 +62,7 @@ public class RedisChat {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
                 logger.info("Closing server gracefully, signalling all web sockets to close...");
-                webSocketServer.broadcastMessage(new IfmMessage(IfmMessageType.Close, "", "", "close now!"));
+                webSocketServer.broadcastMessage(new ChatMessage(ChatMessageType.Close, "", "", "close now!"));
                 Thread.sleep(5000);
 
                 logger.info("Closing reader thread...");
@@ -103,7 +103,7 @@ public class RedisChat {
                 logger.trace(String.format("New connection received: %s", socketId));
 
                 MessageConsumer<Object> messageConsumer = vertx.eventBus().consumer(BROADCAST_CHANNEL, messageObject -> {
-                    IfmMessage message = IfmMessage.fromSerializedString((String) messageObject.body());
+                    ChatMessage message = ChatMessage.fromSerializedString((String) messageObject.body());
                     switch (message.messageType) {
                         case Close -> {
                             serverWebSocket.close();
@@ -128,7 +128,7 @@ public class RedisChat {
                     if (logger.isTraceEnabled()) {
                         logger.trace(String.format("Message received from web socket:\n%s", message));
                     }
-                    IfmMessage addedMessage = redisMessageStream.add(new IfmMessage(serverWebSocket.binaryHandlerID(), message));
+                    ChatMessage addedMessage = redisMessageStream.add(new ChatMessage(serverWebSocket.binaryHandlerID(), message));
                     if (logger.isTraceEnabled()) {
                         logger.trace(String.format("Sent to redis:\n%s", addedMessage));
                     }
@@ -150,7 +150,7 @@ public class RedisChat {
             httpServer.close();
         }
 
-        public void broadcastMessage(IfmMessage message) {
+        public void broadcastMessage(ChatMessage message) {
             vertx.eventBus().publish(BROADCAST_CHANNEL, message.toSerializedString());
         }
     }
@@ -170,8 +170,8 @@ public class RedisChat {
             logger.info(String.format("Connection '%s' established to Redis on localhost:18090", connectionName));
 
             if (offset == null) {
-                add(new IfmMessage("init-head", "init"));
-                IfmMessage head = readHead();
+                add(new ChatMessage("init-head", "init"));
+                ChatMessage head = readHead();
                 if (head == null) {
                     logger.warn("Failed to write an read back a message to the messages stream. Redis may be having errors.");
                     this.offset = "0-0";
@@ -186,14 +186,14 @@ public class RedisChat {
         /**
          * Append a message to the Redis stream 'messages'.
          */
-        public IfmMessage add(IfmMessage message) {
+        public ChatMessage add(ChatMessage message) {
             //XADD messages * messageType "Broadcast" socketId "__vertx.ws.de4a22c7-e925-4c65-ac22-820a964c7041" message "Hi there"
             Map<String, String> messageMap = message.toMap();
             String id = connection.sync().xadd("messages", messageMap);
-            return new IfmMessage(id, message.socketId, message.message);
+            return new ChatMessage(id, message.socketId, message.message);
         }
 
-        public List<IfmMessage> read() {
+        public List<ChatMessage> read() {
             return read(Duration.ZERO);
         }
 
@@ -201,23 +201,23 @@ public class RedisChat {
          * Return a set of messages from the Redis stream 'messages' (blocking for duration).
          * Intended to be called in a loop with a short duration.
          */
-        public List<IfmMessage> read(Duration timeout) {
+        public List<ChatMessage> read(Duration timeout) {
             //XREAD BLOCK 0 STREAMS messages 1631516018887-0
             XReadArgs.StreamOffset<String> streamOffset = XReadArgs.StreamOffset.from("messages", offset);
             RedisCommands<String, String> sync = connection.sync();
             sync.setTimeout(timeout);
-            List<IfmMessage> messagesList = sync.xread(XReadArgs.Builder.block(timeout), streamOffset).stream().map(IfmMessage::fromStreamMessage).toList();
+            List<ChatMessage> messagesList = sync.xread(XReadArgs.Builder.block(timeout), streamOffset).stream().map(ChatMessage::fromStreamMessage).toList();
             if (messagesList.size() > 0) {
                 this.offset = messagesList.get(messagesList.size() - 1).id;
             }
             return messagesList;
         }
 
-        public IfmMessage readHead() {
+        public ChatMessage readHead() {
             //XREVRANGE messages + - COUNT 1
             List<StreamMessage<String, String>> messages = connection.sync().xrevrange("messages", Range.unbounded(), Limit.from(1));
             if (messages != null && messages.size() > 0) {
-                return IfmMessage.fromStreamMessage(messages.get(0));
+                return ChatMessage.fromStreamMessage(messages.get(0));
             } else {
                 return null;
             }
@@ -230,34 +230,34 @@ public class RedisChat {
         }
     }
 
-    private enum IfmMessageType {
+    private enum ChatMessageType {
         None,
         Broadcast,
         Close;
 
-        public static IfmMessageType valueOfSafe(String messageTypeName) {
+        public static ChatMessageType valueOfSafe(String messageTypeName) {
             if (messageTypeName == null || messageTypeName.length() == 0) {
-                return IfmMessageType.None;
+                return ChatMessageType.None;
             } else {
                 try {
-                    return IfmMessageType.valueOf(messageTypeName);
+                    return ChatMessageType.valueOf(messageTypeName);
                 } catch (IllegalArgumentException e) {
-                    return IfmMessageType.None;
+                    return ChatMessageType.None;
                 }
             }
         }
     }
 
-    private static record IfmMessage(IfmMessageType messageType, String id, String socketId, String message) {
-        public IfmMessage(String messageTypeName, String id, String socketId, String message) {
-            this(IfmMessageType.valueOfSafe(messageTypeName), id, socketId, message);
+    private static record ChatMessage(ChatMessageType messageType, String id, String socketId, String message) {
+        public ChatMessage(String messageTypeName, String id, String socketId, String message) {
+            this(ChatMessageType.valueOfSafe(messageTypeName), id, socketId, message);
         }
 
-        public IfmMessage(String id, String socketId, String message) {
-            this(IfmMessageType.Broadcast, id, socketId, message);
+        public ChatMessage(String id, String socketId, String message) {
+            this(ChatMessageType.Broadcast, id, socketId, message);
         }
 
-        public IfmMessage(String socketId, String message) {
+        public ChatMessage(String socketId, String message) {
             this(null, socketId, message);
         }
 
@@ -265,9 +265,9 @@ public class RedisChat {
             return String.format("%s|||%s|||%s|||%s", messageType.name(), id, socketId, message);
         }
 
-        public static IfmMessage fromSerializedString(String ifmMessageString) {
-            String[] parts = ifmMessageString.split("\\|\\|\\|");
-            return new IfmMessage(IfmMessageType.valueOf(parts[0]), parts[1], parts[2], parts[3]);
+        public static ChatMessage fromSerializedString(String chatMessageString) {
+            String[] parts = chatMessageString.split("\\|\\|\\|");
+            return new ChatMessage(ChatMessageType.valueOf(parts[0]), parts[1], parts[2], parts[3]);
         }
 
         public Map<String, String> toMap() {
@@ -278,11 +278,11 @@ public class RedisChat {
             return messageMap;
         }
 
-        public static IfmMessage fromStreamMessage(StreamMessage<String, String> message) {
+        public static ChatMessage fromStreamMessage(StreamMessage<String, String> message) {
             if (message == null) {
                 return null;
             }
-            return new IfmMessage(message.getBody().get("messageType"), message.getId(), message.getBody().get("socketId"), message.getBody().get("message"));
+            return new ChatMessage(message.getBody().get("messageType"), message.getId(), message.getBody().get("socketId"), message.getBody().get("message"));
         }
 
     }
