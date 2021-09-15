@@ -7,7 +7,7 @@ import ws from 'k6/ws';
 import {check} from 'k6';
 
 const debug = false;
-const peak_vus = 100;
+const peak_vus = 10000;
 const total_time_millis = (debug ? 34 : 120) * 1000;
 
 export const options = debug ? {stages: [{duration: '2s', target: 2},{duration: '30s', target: 2},{duration: '2s', target: 0}]} : {

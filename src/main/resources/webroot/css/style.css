@@ -10,6 +10,10 @@ fieldset {
     margin-bottom: 10px;
     padding: 5px 10px;
     border: 1px solid #777;
+
+}
+fieldset div {
+    padding: 3px 3px;
 }
 
 legend {
@@ -25,7 +29,12 @@ label {
 }
 
 #connectionStatus {
-    font-weight: bold;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    white-space: -moz-pre-wrap;
+    white-space: -pre-wrap;
+    white-space: -o-pre-wrap;
+    word-wrap: break-word;
 }
 
 #content {
@@ -36,10 +45,6 @@ label {
     width: 225px;
     padding: 1px 3px;
     border: 1px solid #999;
-}
-
-#disconnectButton {
-    display: none;
 }
 
 #requestArea textarea {

@@ -14,11 +14,18 @@
             <label>URL:</label>
             <input type="text" id="serverUrl" value="ws://localhost:8080"/>
             <button id="connectButton">Open</button>
-            <button id="disconnectButton">Close</button>
+            <button id="disconnectButton" disabled="disabled">Close</button>
+        </div>
+        <div>
+            <label>Identity:</label>
+            <input type="text" id="username" value="bob@whoami.com" disabled="disabled"/>
+            <button id="identifyButton" disabled="disabled">Identify</button>
         </div>
         <div>
             <label>Status:</label>
-            <span id="connectionStatus">CLOSED</span>
+        </div>
+        <div>
+            <pre id="connectionStatus">CLOSED</pre>
         </div>
     </fieldset>
     <fieldset id="requestArea">
