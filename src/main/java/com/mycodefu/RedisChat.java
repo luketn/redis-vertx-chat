@@ -95,7 +95,7 @@ public class RedisChat {
     }
 
     private static class WebSocketServer implements AutoCloseable {
-        public static final String IDENTIFY_MESSAGE_PREFIX = "Subscribe:";
+        public static final String IDENTIFY_MESSAGE_PREFIX = "Identify:";
         private final HttpServer httpServer;
 
         private static final String BROADCAST_CHANNEL = "BROADCAST_MESSAGE";
@@ -149,6 +149,8 @@ public class RedisChat {
                         if (logger.isTraceEnabled()) {
                             logger.trace(String.format("Identified socket %s as username '%s' and subscribed to event bus channel for direct messages", socketId, identity.get()));
                         }
+                        serverWebSocket.writeTextMessage("IdentifiedAs:" + identity.get());
+
                     } else if (message.startsWith("@") && message.length() > 1) {
                         int indexOfSpace = message.indexOf(" ");
                         if (indexOfSpace != -1) {

@@ -93,7 +93,7 @@ new function() {
     var identifyUser = function() {
         var usernameValue = username.val();
         addMessage('Identified as "' + usernameValue + '"', 'SENT');
-        ws.send("Subscribe:" + usernameValue);
+        ws.send("Identify:" + usernameValue);
         username.attr('disabled', 'disabled');
         identifyButton.attr('disabled', 'disabled');
     }
