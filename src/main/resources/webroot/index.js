@@ -142,7 +142,7 @@ new function() {
         messages.append(msg);
 
         var msgBox = messages.get(0);
-        while (msgBox.childNodes.length > 10) {
+        while (msgBox.childNodes.length > 100) {
             msgBox.removeChild(msgBox.firstChild);
         }
         msgBox.scrollTop = msgBox.scrollHeight;
@@ -193,6 +193,24 @@ new function() {
                     return false;
                 }
             });
+
+            let protocol;
+            let wsUrl = window.location.href;
+            if (window.location.protocol==='https') {
+                protocol='wss';
+                wsUrl = protocol + window.location.href.substr(5);
+            } else {
+                protocol='ws';
+                wsUrl = protocol + window.location.href.substr(4);
+            }
+            $('#serverUrl').val(wsUrl);
+
+            setInterval(()=>{
+                let legend = $('#legend');
+                $.get(window.location.href + "/stats.json", (data)=>{
+                    legend.text('Server (total sockets ever: ' + data.totalSocketConnectionsEver + ', total messages received ever: ' + data.totalSocketMessagesReceivedEver + ', total messages sent ever: ' + data.totalSocketMessagesSentEver + ')');
+                });
+            }, 1000);
         }
     };
 }

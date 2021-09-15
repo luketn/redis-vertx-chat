@@ -3,10 +3,12 @@ package com.mycodefu;
 import io.lettuce.core.*;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.sync.RedisCommands;
+import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
 import io.vertx.core.eventbus.MessageConsumer;
 import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.ServerWebSocket;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.handler.ErrorHandler;
 import io.vertx.ext.web.handler.StaticHandler;
@@ -17,6 +19,7 @@ import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
@@ -97,6 +100,9 @@ public class RedisChat {
     private static class WebSocketServer implements AutoCloseable {
         public static final String IDENTIFY_MESSAGE_PREFIX = "Identify:";
         private final HttpServer httpServer;
+        private final AtomicLong totalWebsocketConnectionsEver = new AtomicLong();
+        private final AtomicLong totalWebsocketMessagesReceivedEver = new AtomicLong();
+        private final AtomicLong totalWebsocketMessagesSentEver = new AtomicLong();
 
         private static final String BROADCAST_CHANNEL = "BROADCAST_MESSAGE";
 
@@ -106,9 +112,13 @@ public class RedisChat {
             router.route().handler(StaticHandler.create().setCachingEnabled(false));
 
             httpServer = vertx.createHttpServer();
+
+            router.get("/stats.json").respond(ctx-> Future.succeededFuture(new Stats(totalWebsocketConnectionsEver.get(), totalWebsocketMessagesReceivedEver.get(), totalWebsocketMessagesSentEver.get())));
+
             httpServer.webSocketHandler(serverWebSocket -> {
                 final String socketId = serverWebSocket.binaryHandlerID();
                 final AtomicReference<String> identity = new AtomicReference<>("");
+                totalWebsocketConnectionsEver.getAndIncrement();
 
                 logger.trace(String.format("New connection received: %s", socketId));
 
@@ -120,7 +130,7 @@ public class RedisChat {
                                 if (logger.isTraceEnabled()) {
                                     logger.trace(String.format("Broadcasting message to %s:\n%s", socketId, message.message));
                                 }
-                                serverWebSocket.writeTextMessage(message.message);
+                                writeMessage(serverWebSocket, message.message);
                             } else {
                                 if (logger.isTraceEnabled()) {
                                     logger.trace(String.format("Ignoring message broadcast from self:\n%s", message.message));
@@ -132,6 +142,7 @@ public class RedisChat {
                 });
 
                 serverWebSocket.handler(buffer -> {
+                    totalWebsocketMessagesReceivedEver.getAndIncrement();
                     String message = buffer.toString();
                     if (logger.isTraceEnabled()) {
                         logger.trace(String.format("Message received from web socket:\n%s", message));
@@ -144,12 +155,13 @@ public class RedisChat {
                             if (logger.isTraceEnabled()) {
                                 logger.trace(String.format("Sending direct message to %s:\n%s", socketId, personalMessage.message));
                             }
-                            serverWebSocket.writeTextMessage(personalMessage.message);
+                            writeMessage(serverWebSocket, personalMessage.message);
+
                         });
                         if (logger.isTraceEnabled()) {
                             logger.trace(String.format("Identified socket %s as username '%s' and subscribed to event bus channel for direct messages", socketId, identity.get()));
                         }
-                        serverWebSocket.writeTextMessage("IdentifiedAs:" + identity.get());
+                        writeMessage(serverWebSocket, "IdentifiedAs:" + identity.get());
 
                     } else if (message.startsWith("@") && message.length() > 1) {
                         int indexOfSpace = message.indexOf(" ");
@@ -186,6 +198,11 @@ public class RedisChat {
             httpServer.requestHandler(router);
             httpServer.listen(8080).result();
             logger.info("Listening for web socket connections on 8080!");
+        }
+
+        private void writeMessage(ServerWebSocket serverWebSocket, String message) {
+            totalWebsocketMessagesSentEver.getAndIncrement();
+            serverWebSocket.writeTextMessage(message);
         }
 
         private String getIdentifiedMessage(AtomicReference<String> identity, String messageValue) {
@@ -377,6 +394,29 @@ public class RedisChat {
                     ", channel='" + channel + '\'' +
                     ", message='" + message + '\'' +
                     '}';
+        }
+    }
+    private static class Stats {
+        private long totalSocketConnectionsEver;
+        private long totalSocketMessagesReceivedEver;
+        private long totalSocketMessagesSentEver;
+
+        public Stats(long totalSocketConnectionsEver, long totalSocketMessagesReceivedEver, long totalSocketMessagesSentEver){
+            this.totalSocketConnectionsEver = totalSocketConnectionsEver;
+            this.totalSocketMessagesReceivedEver = totalSocketMessagesReceivedEver;
+            this.totalSocketMessagesSentEver = totalSocketMessagesSentEver;
+        }
+
+        public long getTotalSocketConnectionsEver() {
+            return totalSocketConnectionsEver;
+        }
+
+        public long getTotalSocketMessagesReceivedEver() {
+            return totalSocketMessagesReceivedEver;
+        }
+
+        public long getTotalSocketMessagesSentEver() {
+            return totalSocketMessagesSentEver;
         }
     }
 }
