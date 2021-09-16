@@ -7,7 +7,7 @@ import ws from 'k6/ws';
 import {check} from 'k6';
 import { uuidv4 } from "https://jslib.k6.io/k6-utils/1.1.0/index.js";
 
-const debug = true;
+const debug = false;
 const peak_vus = debug ? 10 : 100;
 const total_time_millis = (debug ? 34 : 120) * 1000;
 const ramp_up_down_time = debug ? '5s' : '30s';
@@ -25,7 +25,7 @@ const debugLog = debug ? console.log : () => {};
 
 export default function () {
     //const url = 'ws://echo.websocket.org'; // public websocket server for quick test
-    const url = 'ws://localhost:8080/';    // local websocket server
+    const url = 'ws://192.168.0.51:8080/';    // local websocket server
 
     let username = 'k6-' + uuidv4();
     const res = ws.connect(url, null, (socket) => {

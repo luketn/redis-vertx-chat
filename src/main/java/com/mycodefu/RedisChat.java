@@ -1,8 +1,12 @@
 package com.mycodefu;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.lettuce.core.*;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.sync.RedisCommands;
+import io.netty.util.internal.StringUtil;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
@@ -27,6 +31,7 @@ public class RedisChat {
     private static final Logger logger = LogManager.getLogger(RedisChat.class);
 
     private static final Vertx vertx = Vertx.vertx(new VertxOptions().setWorkerPoolSize(100));
+    public static final ObjectMapper jsonObjectMapper = new ObjectMapper();
 
     public static void main(String[] args) {
         RedisMessageStream redisMessageSenderStream = new RedisMessageStream("Message Sender");
@@ -113,7 +118,7 @@ public class RedisChat {
 
             httpServer = vertx.createHttpServer();
 
-            router.get("/stats.json").respond(ctx-> Future.succeededFuture(new Stats(totalWebsocketConnectionsEver.get(), totalWebsocketMessagesReceivedEver.get(), totalWebsocketMessagesSentEver.get())));
+            router.get("/stats.json").respond(ctx -> Future.succeededFuture(new Stats(totalWebsocketConnectionsEver.get(), totalWebsocketMessagesReceivedEver.get(), totalWebsocketMessagesSentEver.get())));
 
             httpServer.webSocketHandler(serverWebSocket -> {
                 final String socketId = serverWebSocket.binaryHandlerID();
@@ -130,7 +135,12 @@ public class RedisChat {
                                 if (logger.isTraceEnabled()) {
                                     logger.trace(String.format("Broadcasting message to %s:\n%s", socketId, message.message));
                                 }
-                                writeMessage(serverWebSocket, message.message);
+                                try {
+                                    writeMessage(serverWebSocket, jsonObjectMapper.writeValueAsString(BrowserChatMessage.fromRedisStreamMessage(message)));
+                                } catch (JsonProcessingException e) {
+                                    logger.error("Failed to serialize JSON message to client.", e);
+                                }
+
                             } else {
                                 if (logger.isTraceEnabled()) {
                                     logger.trace(String.format("Ignoring message broadcast from self:\n%s", message.message));
@@ -141,51 +151,59 @@ public class RedisChat {
                     }
                 });
 
-                serverWebSocket.handler(buffer -> {
-                    totalWebsocketMessagesReceivedEver.getAndIncrement();
-                    String message = buffer.toString();
-                    if (logger.isTraceEnabled()) {
-                        logger.trace(String.format("Message received from web socket:\n%s", message));
-                    }
-                    if (message.startsWith(IDENTIFY_MESSAGE_PREFIX) && message.length() > IDENTIFY_MESSAGE_PREFIX.length() && identity.get().equals("")) {
-                        String identityValue = message.substring(IDENTIFY_MESSAGE_PREFIX.length());
-                        identity.set(identityValue);
-                        vertx.eventBus().consumer(identityValue, messageObject -> {
-                            RedisChatMessage personalMessage = RedisChatMessage.fromSerializedString((String) messageObject.body());
-                            if (logger.isTraceEnabled()) {
-                                logger.trace(String.format("Sending direct message to %s:\n%s", socketId, personalMessage.message));
-                            }
-                            writeMessage(serverWebSocket, personalMessage.message);
+                serverWebSocket.handler(messageRawJsonStringBuffer -> {
+                    try {
+                        String messageRawJsonString = messageRawJsonStringBuffer.toString();
+                        BrowserChatMessage browserChatMessage = jsonObjectMapper.readValue(messageRawJsonString, BrowserChatMessage.class);
 
-                        });
+                        totalWebsocketMessagesReceivedEver.getAndIncrement();
                         if (logger.isTraceEnabled()) {
-                            logger.trace(String.format("Identified socket %s as username '%s' and subscribed to event bus channel for direct messages", socketId, identity.get()));
+                            logger.trace(String.format("Message received from web socket %s:\n%s", socketId, browserChatMessage));
                         }
-                        writeMessage(serverWebSocket, "IdentifiedAs:" + identity.get());
+                        switch (browserChatMessage.messageType) {
+                            case Identify: {
+                                identity.set(browserChatMessage.value);
+                                vertx.eventBus().consumer(identity.get(), messageObject -> {
+                                    RedisChatMessage personalMessage = RedisChatMessage.fromSerializedString((String) messageObject.body());
+                                    if (logger.isTraceEnabled()) {
+                                        logger.trace(String.format("Sending direct message to %s (%s):\n%s", identity.get(), socketId, personalMessage.message));
+                                    }
+                                    try {
+                                        writeMessage(serverWebSocket, jsonObjectMapper.writeValueAsString(BrowserChatMessage.fromRedisStreamMessage(personalMessage)));
+                                    } catch (JsonProcessingException e) {
+                                        logger.error("Failed to serialize JSON message to client.", e);
+                                    }
 
-                    } else if (message.startsWith("@") && message.length() > 1) {
-                        int indexOfSpace = message.indexOf(" ");
-                        if (indexOfSpace != -1) {
-                            String destinationIdentity = message.substring(1, indexOfSpace);
-                            String messageValue = message.substring(indexOfSpace + 1);
-                            if (!destinationIdentity.equalsIgnoreCase(identity.get()) && messageValue.length() > 0) {
-                                String identifiedMessage = getIdentifiedMessage(identity, messageValue);
-                                RedisChatMessage addedMessage = redisMessageStream.add(RedisChatMessage.directMessage(serverWebSocket.binaryHandlerID(), destinationIdentity, identifiedMessage));
+                                });
+                                if (logger.isTraceEnabled()) {
+                                    logger.trace(String.format("Identified socket %s as username '%s' and subscribed to event bus channel for direct messages", socketId, identity.get()));
+                                }
+                                writeMessage(serverWebSocket, BrowserChatMessage.identifiedAs(identity.get()));
+                                break;
+                            }
+                            case Direct: {
+                                if (!browserChatMessage.to.equalsIgnoreCase(identity.get()) && browserChatMessage.value != null && browserChatMessage.value.length() > 0) {
+                                    RedisChatMessage addedMessage = redisMessageStream.add(RedisChatMessage.directMessage(serverWebSocket.binaryHandlerID(), identity.get(), browserChatMessage.to, browserChatMessage.value));
+                                    if (logger.isTraceEnabled()) {
+                                        logger.trace(String.format("Sent to redis:\n%s", addedMessage));
+                                    }
+                                } else {
+                                    if (logger.isTraceEnabled()) {
+                                        logger.trace(String.format("Ignoring direct message on socket identity '%s':\n%s", identity.get(), messageRawJsonString));
+                                    }
+                                }
+                                break;
+                            }
+                            case Broadcast: {
+                                RedisChatMessage addedMessage = redisMessageStream.add(RedisChatMessage.broadcastMessage(serverWebSocket.binaryHandlerID(), identity.get(), browserChatMessage.value));
                                 if (logger.isTraceEnabled()) {
                                     logger.trace(String.format("Sent to redis:\n%s", addedMessage));
                                 }
-                            }
-                        } else {
-                            if (logger.isTraceEnabled()) {
-                                logger.trace(String.format("Invalid direct message ignored (missing space char):\n%s", message));
+                                break;
                             }
                         }
-                    } else {
-                        String identifiedMessage = getIdentifiedMessage(identity, message);
-                        RedisChatMessage addedMessage = redisMessageStream.add(RedisChatMessage.broadcastMessage(serverWebSocket.binaryHandlerID(), identifiedMessage));
-                        if (logger.isTraceEnabled()) {
-                            logger.trace(String.format("Sent to redis:\n%s", addedMessage));
-                        }
+                    } catch (JsonProcessingException e) {
+                        logger.error(String.format("Received a malformed message from the browser:\n%s", messageRawJsonStringBuffer), e);
                     }
                 });
 
@@ -200,19 +218,17 @@ public class RedisChat {
             logger.info("Listening for web socket connections on 8080!");
         }
 
+        private void writeMessage(ServerWebSocket serverWebSocket, BrowserChatMessage message) {
+            try {
+                writeMessage(serverWebSocket, jsonObjectMapper.writeValueAsString(message));
+            } catch (JsonProcessingException e) {
+                logger.error(String.format("Failed to serialize message to JSON:\n%s", message), e);
+            }
+        }
+
         private void writeMessage(ServerWebSocket serverWebSocket, String message) {
             totalWebsocketMessagesSentEver.getAndIncrement();
             serverWebSocket.writeTextMessage(message);
-        }
-
-        private String getIdentifiedMessage(AtomicReference<String> identity, String messageValue) {
-            String identifiedMessage;
-            if (identity.get().equals("")) {
-                identifiedMessage = messageValue;
-            } else {
-                identifiedMessage = String.format("%s: %s", identity.get(), messageValue);
-            }
-            return identifiedMessage;
         }
 
         @Override
@@ -225,7 +241,7 @@ public class RedisChat {
         }
 
         public void directMessage(RedisChatMessage message) {
-            vertx.eventBus().publish(message.channel, message.toSerializedString());
+            vertx.eventBus().publish(message.to, message.toSerializedString());
         }
     }
 
@@ -256,7 +272,7 @@ public class RedisChat {
          */
         public RedisChatMessage add(RedisChatMessage message) {
             //XADD messages * messageType "Broadcast" socketId "__vertx.ws.de4a22c7-e925-4c65-ac22-820a964c7041" message "Hi there"
-            Map<String, String> messageMap = message.toMap();
+            Map<String, String> messageMap = message.toRedisMessage();
             String id = connection.sync().xadd("messages", messageMap);
             return message.withId(id);
         }
@@ -274,7 +290,7 @@ public class RedisChat {
             XReadArgs.StreamOffset<String> streamOffset = XReadArgs.StreamOffset.from("messages", offset);
             RedisCommands<String, String> sync = connection.sync();
             sync.setTimeout(timeout);
-            List<RedisChatMessage> messagesList = sync.xread(XReadArgs.Builder.block(timeout), streamOffset).stream().map(RedisChatMessage::fromStreamMessage).collect(Collectors.toList());
+            List<RedisChatMessage> messagesList = sync.xread(XReadArgs.Builder.block(timeout), streamOffset).stream().map(RedisChatMessage::fromRedisMessage).collect(Collectors.toList());
             if (messagesList.size() > 0) {
                 this.offset = messagesList.get(messagesList.size() - 1).id;
             }
@@ -285,7 +301,7 @@ public class RedisChat {
             //XREVRANGE messages + - COUNT 1
             List<StreamMessage<String, String>> messages = connection.sync().xrevrange("messages", Range.unbounded(), Limit.from(1));
             if (messages != null && messages.size() > 0) {
-                return RedisChatMessage.fromStreamMessage(messages.get(0));
+                return RedisChatMessage.fromRedisMessage(messages.get(0));
             } else {
                 return null;
             }
@@ -316,6 +332,77 @@ public class RedisChat {
         }
     }
 
+    private enum BrowserChatMessageType {
+        Identify,
+        IdentifiedAs,
+        Broadcast,
+        Direct
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private static class BrowserChatMessage {
+        private String datastoreId;
+        private BrowserChatMessageType messageType;
+        private String from;
+        private String to;
+        private String value;
+
+        public static BrowserChatMessage identifiedAs(String username) {
+            BrowserChatMessage browserChatMessage = new BrowserChatMessage();
+            browserChatMessage.messageType = BrowserChatMessageType.IdentifiedAs;
+            browserChatMessage.value = username;
+            return browserChatMessage;
+        }
+
+        public static BrowserChatMessage fromRedisStreamMessage(RedisChatMessage redisChatMessage) {
+            BrowserChatMessage browserChatMessage = new BrowserChatMessage();
+            switch (redisChatMessage.messageType) {
+                case Broadcast: {
+                    browserChatMessage.messageType = BrowserChatMessageType.Broadcast;
+                    browserChatMessage.from = redisChatMessage.from;
+                    break;
+                }
+                case Direct: {
+                    browserChatMessage.messageType = BrowserChatMessageType.Direct;
+                    browserChatMessage.from = redisChatMessage.from;
+                    browserChatMessage.to = redisChatMessage.to;
+                    break;
+                }
+            }
+            browserChatMessage.datastoreId = redisChatMessage.id;
+            browserChatMessage.value = redisChatMessage.message;
+            return browserChatMessage;
+        }
+
+        public String getFrom() {
+            return from;
+        }
+
+        public String getDatastoreId() {
+            return datastoreId;
+        }
+
+        public BrowserChatMessageType getMessageType() {
+            return messageType;
+        }
+
+        public String getTo() {
+            return to;
+        }
+
+        public String getValue() {
+            return value;
+        }
+
+        @Override
+        public String toString() {
+            try {
+                return "BrowserChatMessage" + jsonObjectMapper.writeValueAsString(this);
+            } catch (JsonProcessingException e) {return "BAD";}
+        }
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     private static class RedisChatMessage {
         private final RedisChatMessageType messageType;
         /**
@@ -327,81 +414,131 @@ public class RedisChat {
          */
         private final String socketId;
         /**
-         * The channel to send the message to (If the messageType is Broadcast, this will be hard-wired to BROADCAST_MESSAGE - a reserved channel name).
+         * The person to send the message to (If the messageType is Broadcast, this will be hard-wired to "").
          */
-        private final String channel;
+        private final String to;
+        /**
+         * The person the message is from.
+         */
+        private final String from;
         /**
          * The value of the message.
          */
         private final String message;
 
+        public RedisChatMessage() {
+            this(RedisChatMessageType.None, "", "", "", "", "");
+        }
 
-        public RedisChatMessage(RedisChatMessageType messageType, String id, String socketId, String channel, String message) {
+        public RedisChatMessage(RedisChatMessageType messageType, String id, String socketId, String from, String to, String message) {
             this.messageType = messageType;
             this.id = id;
             this.socketId = socketId;
-            this.channel = channel;
+            this.from = from;
+            this.to = to;
             this.message = message;
         }
 
         public static RedisChatMessage initializer() {
-            return new RedisChatMessage(RedisChatMessageType.Initialize, "", "", "", "");
+            return new RedisChatMessage(RedisChatMessageType.Initialize, "", "", "", "", "");
         }
 
-        public static RedisChatMessage broadcastMessage(String socketId, String message) {
-            return new RedisChatMessage(RedisChatMessageType.Broadcast, "", socketId, WebSocketServer.BROADCAST_CHANNEL, message);
+        public static RedisChatMessage broadcastMessage(String socketId, String from, String message) {
+            return new RedisChatMessage(RedisChatMessageType.Broadcast, "", socketId, from, "", message);
         }
 
-        public static RedisChatMessage directMessage(String socketId, String channel, String message) {
-            return new RedisChatMessage(RedisChatMessageType.Direct, "", socketId, channel, message);
+        public static RedisChatMessage directMessage(String socketId, String from, String to, String message) {
+            return new RedisChatMessage(RedisChatMessageType.Direct, "", socketId, from, to, message);
         }
 
         public String toSerializedString() {
-            return String.format("%s|||%s|||%s|||%s|||%s", messageType.name(), id, socketId, channel, message);
+            try {
+                return jsonObjectMapper.writeValueAsString(this);
+            } catch (JsonProcessingException e) {
+                throw new RuntimeException("Serialization error.", e);
+            }
         }
 
         public static RedisChatMessage fromSerializedString(String chatMessageString) {
-            String[] parts = chatMessageString.split("\\|\\|\\|");
-            return new RedisChatMessage(RedisChatMessageType.valueOf(parts[0]), parts[1], parts[2], parts[3], parts[4]);
+            try {
+                return jsonObjectMapper.readValue(chatMessageString, RedisChatMessage.class);
+            } catch (JsonProcessingException e) {
+                throw new RuntimeException("Serialization error.", e);
+            }
         }
 
-        public Map<String, String> toMap() {
+        public Map<String, String> toRedisMessage() {
             Map<String, String> messageMap = new HashMap<>();
             messageMap.put("messageType", messageType.name());
-            messageMap.put("socketId", socketId);
-            messageMap.put("channel", channel);
-            messageMap.put("message", message);
+            if (!StringUtil.isNullOrEmpty(socketId)) {
+                messageMap.put("socketId", socketId);
+            }
+            if (!StringUtil.isNullOrEmpty(from)) {
+                messageMap.put("from", from);
+            }
+            if (!StringUtil.isNullOrEmpty(to)) {
+                messageMap.put("to", to);
+            }
+            if (!StringUtil.isNullOrEmpty(message)) {
+                messageMap.put("message", message);
+            }
             return messageMap;
         }
 
-        public static RedisChatMessage fromStreamMessage(StreamMessage<String, String> message) {
+        public static RedisChatMessage fromRedisMessage(StreamMessage<String, String> message) {
             if (message == null) {
                 return null;
             }
-            return new RedisChatMessage(RedisChatMessageType.valueOfSafe(message.getBody().get("messageType")), message.getId(), message.getBody().get("socketId"), message.getBody().get("channel"), message.getBody().get("message"));
+            return new RedisChatMessage(RedisChatMessageType.valueOfSafe(valueOrEmptyString(message, "messageType")), message.getId(), valueOrEmptyString(message, "socketId"), valueOrEmptyString(message, "from"), valueOrEmptyString(message, "to"), valueOrEmptyString(message, "message"));
+        }
+
+        private static String valueOrEmptyString(StreamMessage<String, String> message, String fieldName) {
+            String value = message.getBody().get(fieldName);
+            return value == null ? "" : value;
         }
 
         public RedisChatMessage withId(String id) {
-            return new RedisChatMessage(messageType, id, socketId, channel, message);
+            return new RedisChatMessage(messageType, id, socketId, from, to, message);
         }
 
         @Override
         public String toString() {
-            return "ChatMessage{" +
-                    "messageType=" + messageType +
-                    ", id='" + id + '\'' +
-                    ", socketId='" + socketId + '\'' +
-                    ", channel='" + channel + '\'' +
-                    ", message='" + message + '\'' +
-                    '}';
+            try {
+                return "ChatMessage" + jsonObjectMapper.writeValueAsString(this);
+            } catch (JsonProcessingException e) {return "BAD";}
+        }
+
+        public RedisChatMessageType getMessageType() {
+            return messageType;
+        }
+
+        public String getId() {
+            return id;
+        }
+
+        public String getSocketId() {
+            return socketId;
+        }
+
+        public String getTo() {
+            return to;
+        }
+
+        public String getFrom() {
+            return from;
+        }
+
+        public String getMessage() {
+            return message;
         }
     }
+
     private static class Stats {
         private long totalSocketConnectionsEver;
         private long totalSocketMessagesReceivedEver;
         private long totalSocketMessagesSentEver;
 
-        public Stats(long totalSocketConnectionsEver, long totalSocketMessagesReceivedEver, long totalSocketMessagesSentEver){
+        public Stats(long totalSocketConnectionsEver, long totalSocketMessagesReceivedEver, long totalSocketMessagesSentEver) {
             this.totalSocketConnectionsEver = totalSocketConnectionsEver;
             this.totalSocketMessagesReceivedEver = totalSocketMessagesReceivedEver;
             this.totalSocketMessagesSentEver = totalSocketMessagesSentEver;

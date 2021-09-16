@@ -3,8 +3,8 @@ new function() {
     var connected = false;
     var connecting = false;
     var lastConnectFailed = false;
-
     var serverUrl;
+
     var connectionStatus;
     var sendMessage;
     var username;
@@ -93,7 +93,10 @@ new function() {
     var identifyUser = function() {
         var usernameValue = username.val();
         addMessage('Identified as "' + usernameValue + '"', 'SENT');
-        ws.send("Identify:" + usernameValue);
+        ws.send(JSON.stringify({
+            messageType: "Identify",
+            value: usernameValue
+        }));
         username.attr('disabled', 'disabled');
         identifyButton.attr('disabled', 'disabled');
     }
@@ -118,8 +121,21 @@ new function() {
     };
 
     var onMessage = function(event) {
-        var data = event.data;
-        addMessage(data);
+        var data = JSON.parse(event.data);
+        switch (data.messageType) {
+            case "IdentifiedAs": {
+                addMessage("Identified as " + data.value);
+                break;
+            }
+            case "Broadcast":
+            case "Direct": {
+                addMessage(data.from + ": " + data.value);
+                break;
+            }
+            default: {
+                addMessage(event.data);
+            }
+        }
     };
 
     var onError = function(event) {
@@ -172,7 +188,24 @@ new function() {
             sendButton.click(function(e) {
                 var msg = $('#sendMessage').val();
                 addMessage(msg, 'SENT');
-                ws.send(msg);
+                if (msg.substr(0,1) === "@") {
+                    var to = msg.substr(1);
+                    let indexOfSpace = msg.indexOf(" ");
+                    if (indexOfSpace !== -1) {
+                        to = msg.substr(1, indexOfSpace - 1);
+                        msg = msg.substr(indexOfSpace + 1);
+                    }
+                    ws.send(JSON.stringify({
+                        messageType: "Direct",
+                        to: to,
+                        value: msg
+                    }));
+                } else {
+                    ws.send(JSON.stringify({
+                        messageType: "Broadcast",
+                        value: msg
+                    }));
+                }
             });
 
             $('#clearMessage').click(function(e) {
@@ -195,7 +228,7 @@ new function() {
             });
 
             let protocol;
-            let wsUrl = window.location.href;
+            let wsUrl;
             if (window.location.protocol==='https') {
                 protocol='wss';
                 wsUrl = protocol + window.location.href.substr(5);
