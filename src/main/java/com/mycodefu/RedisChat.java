@@ -20,6 +20,7 @@ import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -121,20 +122,35 @@ public class RedisChat {
             router.get("/stats.json").respond(ctx -> Future.succeededFuture(new Stats(totalWebsocketConnectionsEver.get(), totalWebsocketMessagesReceivedEver.get(), totalWebsocketMessagesSentEver.get())));
             router.get("/getMessagesSince.json").respond(ctx -> {
                 //TODO validate the inputs, and check security to ensure they are authorized to access these messages
-                //TODO add limits the range, this should only be used for a few seconds range (i.e. for connection dropouts etc..)
                 String to = ctx.request().getParam("to");
+                if (StringUtil.isNullOrEmpty(to)) {
+                    return Future.failedFuture("Please supply a 'to' query string parameter.");
+                }
                 String lastReadDatastoreId = ctx.request().getParam("lastReadDatastoreId");
+                if (StringUtil.isNullOrEmpty(lastReadDatastoreId) || !lastReadDatastoreId.contains("-")) {
+                    return Future.failedFuture("Please supply a valid 'lastReadDatastoreId' query string parameter. e.g. 1631792830106-0");
+                }
+
                 RedisChatMessage head = redisMessageStream.readHead();
-                List<BrowserChatMessage> redisChatMessages = redisMessageStream.readRange(lastReadDatastoreId, head.id, 500)
-                        .stream()
-                        .filter(redisChatMessage -> !redisChatMessage.id.equalsIgnoreCase(lastReadDatastoreId))
-                        .filter(redisChatMessage -> to.equalsIgnoreCase(redisChatMessage.to))
-                        .filter(redisChatMessage ->
-                                redisChatMessage.messageType==RedisChatMessageType.Broadcast ||
-                                redisChatMessage.messageType==RedisChatMessageType.Direct )
-                        .map(BrowserChatMessage::fromRedisStreamMessage)
-                        .collect(Collectors.toList());
-                return Future.succeededFuture(redisChatMessages);
+
+                //Limit the range to 60s, this should only be used for a few seconds range (i.e. for connection dropouts etc..)
+                long headMillis = Long.parseUnsignedLong(head.id.split("-")[0]);
+                long lastReadMillis = Long.parseUnsignedLong(lastReadDatastoreId.split("-")[0]);
+                if (headMillis-lastReadMillis > 60_000) {
+                    //The user has been offline for too long, they will just get new messages from the head.
+                    return Future.succeededFuture(new ArrayList<>());
+                } else {
+                    List<BrowserChatMessage> redisChatMessages = redisMessageStream.readRange(lastReadDatastoreId, head.id, 500)
+                            .stream()
+                            .filter(redisChatMessage -> !redisChatMessage.id.equalsIgnoreCase(lastReadDatastoreId))
+                            .filter(redisChatMessage -> to.equalsIgnoreCase(redisChatMessage.to))
+                            .filter(redisChatMessage ->
+                                    redisChatMessage.messageType == RedisChatMessageType.Broadcast ||
+                                            redisChatMessage.messageType == RedisChatMessageType.Direct)
+                            .map(BrowserChatMessage::fromRedisStreamMessage)
+                            .collect(Collectors.toList());
+                    return Future.succeededFuture(redisChatMessages);
+                }
             });
 
             httpServer.webSocketHandler(serverWebSocket -> {

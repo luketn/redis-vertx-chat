@@ -129,6 +129,8 @@ new function () {
         var data = JSON.parse(event.data);
         switch (data.messageType) {
             case "IdentifiedAs": {
+                localStorage.setItem("username", data.value);
+
                 addMessage("Identified as " + data.value);
 
                 let lastReadDatastoreId = localStorage.getItem("lastReadDatastoreId");
@@ -185,6 +187,9 @@ new function () {
             connectionStatus = $('#connectionStatus');
             sendMessage = $('#sendMessage');
             username = $('#username');
+            if (localStorage.getItem('username')){
+                username.val(localStorage.getItem('username'));
+            }
 
             connectButton = $('#connectButton');
             disconnectButton = $('#disconnectButton');
