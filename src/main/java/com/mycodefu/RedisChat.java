@@ -119,6 +119,23 @@ public class RedisChat {
             httpServer = vertx.createHttpServer();
 
             router.get("/stats.json").respond(ctx -> Future.succeededFuture(new Stats(totalWebsocketConnectionsEver.get(), totalWebsocketMessagesReceivedEver.get(), totalWebsocketMessagesSentEver.get())));
+            router.get("/getMessagesSince.json").respond(ctx -> {
+                //TODO validate the inputs, and check security to ensure they are authorized to access these messages
+                //TODO add limits the range, this should only be used for a few seconds range (i.e. for connection dropouts etc..)
+                String to = ctx.request().getParam("to");
+                String lastReadDatastoreId = ctx.request().getParam("lastReadDatastoreId");
+                RedisChatMessage head = redisMessageStream.readHead();
+                List<BrowserChatMessage> redisChatMessages = redisMessageStream.readRange(lastReadDatastoreId, head.id, 500)
+                        .stream()
+                        .filter(redisChatMessage -> !redisChatMessage.id.equalsIgnoreCase(lastReadDatastoreId))
+                        .filter(redisChatMessage -> to.equalsIgnoreCase(redisChatMessage.to))
+                        .filter(redisChatMessage ->
+                                redisChatMessage.messageType==RedisChatMessageType.Broadcast ||
+                                redisChatMessage.messageType==RedisChatMessageType.Direct )
+                        .map(BrowserChatMessage::fromRedisStreamMessage)
+                        .collect(Collectors.toList());
+                return Future.succeededFuture(redisChatMessages);
+            });
 
             httpServer.webSocketHandler(serverWebSocket -> {
                 final String socketId = serverWebSocket.binaryHandlerID();
@@ -162,6 +179,7 @@ public class RedisChat {
                         }
                         switch (browserChatMessage.messageType) {
                             case Identify: {
+                                //TODO: validate against the JWT Authorization cookie whether the authentication context is authorized to identify to receive messages for the given value
                                 identity.set(browserChatMessage.value);
                                 vertx.eventBus().consumer(identity.get(), messageObject -> {
                                     RedisChatMessage personalMessage = RedisChatMessage.fromSerializedString((String) messageObject.body());
@@ -297,6 +315,17 @@ public class RedisChat {
             return messagesList;
         }
 
+        public List<RedisChatMessage> readRange(String fromId, String toId, long limit) {
+            //XRANGE messages 1631516018887-0 1631516018888-0
+            Range<String> idRange = Range.create(fromId, toId);
+            RedisCommands<String, String> sync = connection.sync();
+            List<RedisChatMessage> messagesList = sync.xrange("messages", idRange, Limit.from(limit)).stream().map(RedisChatMessage::fromRedisMessage).collect(Collectors.toList());
+            if (messagesList.size() > 0) {
+                this.offset = messagesList.get(messagesList.size() - 1).id;
+            }
+            return messagesList;
+        }
+
         public RedisChatMessage readHead() {
             //XREVRANGE messages + - COUNT 1
             List<StreamMessage<String, String>> messages = connection.sync().xrevrange("messages", Range.unbounded(), Limit.from(1));
@@ -317,7 +346,8 @@ public class RedisChat {
     private enum RedisChatMessageType {
         None,
         Broadcast,
-        Initialize, Direct;
+        Initialize,
+        Direct;
 
         public static RedisChatMessageType valueOfSafe(String messageTypeName) {
             if (messageTypeName == null || messageTypeName.length() == 0) {
