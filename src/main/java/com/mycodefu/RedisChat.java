@@ -104,7 +104,6 @@ public class RedisChat {
     }
 
     private static class WebSocketServer implements AutoCloseable {
-        public static final String IDENTIFY_MESSAGE_PREFIX = "Identify:";
         private final HttpServer httpServer;
         private final AtomicLong totalWebsocketConnectionsEver = new AtomicLong();
         private final AtomicLong totalWebsocketMessagesReceivedEver = new AtomicLong();
@@ -162,24 +161,19 @@ public class RedisChat {
 
                 MessageConsumer<Object> messageConsumer = vertx.eventBus().consumer(BROADCAST_CHANNEL, messageObject -> {
                     RedisChatMessage message = RedisChatMessage.fromSerializedString((String) messageObject.body());
-                    switch (message.messageType) {
-                        case Broadcast: {
-                            if (!message.socketId.equals(socketId)) {
-                                if (logger.isTraceEnabled()) {
-                                    logger.trace(String.format("Broadcasting message to %s:\n%s", socketId, message.message));
-                                }
-                                try {
-                                    writeMessage(serverWebSocket, jsonObjectMapper.writeValueAsString(BrowserChatMessage.fromRedisStreamMessage(message)));
-                                } catch (JsonProcessingException e) {
-                                    logger.error("Failed to serialize JSON message to client.", e);
-                                }
+                    if (!message.socketId.equals(socketId)) {
+                        if (logger.isTraceEnabled()) {
+                            logger.trace(String.format("Broadcasting message to %s:\n%s", socketId, message.message));
+                        }
+                        try {
+                            writeMessage(serverWebSocket, jsonObjectMapper.writeValueAsString(BrowserChatMessage.fromRedisStreamMessage(message)));
+                        } catch (JsonProcessingException e) {
+                            logger.error("Failed to serialize JSON message to client.", e);
+                        }
 
-                            } else {
-                                if (logger.isTraceEnabled()) {
-                                    logger.trace(String.format("Ignoring message broadcast from self:\n%s", message.message));
-                                }
-                            }
-                            break;
+                    } else {
+                        if (logger.isTraceEnabled()) {
+                            logger.trace(String.format("Ignoring message broadcast from self:\n%s", message.message));
                         }
                     }
                 });
