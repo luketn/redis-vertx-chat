@@ -35,12 +35,12 @@ public class RedisChat {
         Thread readerThread = new Thread(() -> {
             try (RedisMessageStream redisMessageReaderStream = new RedisMessageStream("Message Reader")) {
                 while (true) {
-                    List<ChatMessage> messages = redisMessageReaderStream.read();
+                    List<RedisChatMessage> messages = redisMessageReaderStream.read();
                     if (messages.size() > 0) {
                         if (logger.isTraceEnabled()) {
                             logger.trace(String.format("Received %d messages from Redis:\n%s", messages.size(), messages));
                         }
-                        for (ChatMessage message : messages) {
+                        for (RedisChatMessage message : messages) {
                             switch (message.messageType) {
                                 case Broadcast: {
                                     webSocketServer.broadcastMessage(message);
@@ -123,7 +123,7 @@ public class RedisChat {
                 logger.trace(String.format("New connection received: %s", socketId));
 
                 MessageConsumer<Object> messageConsumer = vertx.eventBus().consumer(BROADCAST_CHANNEL, messageObject -> {
-                    ChatMessage message = ChatMessage.fromSerializedString((String) messageObject.body());
+                    RedisChatMessage message = RedisChatMessage.fromSerializedString((String) messageObject.body());
                     switch (message.messageType) {
                         case Broadcast: {
                             if (!message.socketId.equals(socketId)) {
@@ -151,7 +151,7 @@ public class RedisChat {
                         String identityValue = message.substring(IDENTIFY_MESSAGE_PREFIX.length());
                         identity.set(identityValue);
                         vertx.eventBus().consumer(identityValue, messageObject -> {
-                            ChatMessage personalMessage = ChatMessage.fromSerializedString((String) messageObject.body());
+                            RedisChatMessage personalMessage = RedisChatMessage.fromSerializedString((String) messageObject.body());
                             if (logger.isTraceEnabled()) {
                                 logger.trace(String.format("Sending direct message to %s:\n%s", socketId, personalMessage.message));
                             }
@@ -170,7 +170,7 @@ public class RedisChat {
                             String messageValue = message.substring(indexOfSpace + 1);
                             if (!destinationIdentity.equalsIgnoreCase(identity.get()) && messageValue.length() > 0) {
                                 String identifiedMessage = getIdentifiedMessage(identity, messageValue);
-                                ChatMessage addedMessage = redisMessageStream.add(ChatMessage.directMessage(serverWebSocket.binaryHandlerID(), destinationIdentity, identifiedMessage));
+                                RedisChatMessage addedMessage = redisMessageStream.add(RedisChatMessage.directMessage(serverWebSocket.binaryHandlerID(), destinationIdentity, identifiedMessage));
                                 if (logger.isTraceEnabled()) {
                                     logger.trace(String.format("Sent to redis:\n%s", addedMessage));
                                 }
@@ -182,7 +182,7 @@ public class RedisChat {
                         }
                     } else {
                         String identifiedMessage = getIdentifiedMessage(identity, message);
-                        ChatMessage addedMessage = redisMessageStream.add(ChatMessage.broadcastMessage(serverWebSocket.binaryHandlerID(), identifiedMessage));
+                        RedisChatMessage addedMessage = redisMessageStream.add(RedisChatMessage.broadcastMessage(serverWebSocket.binaryHandlerID(), identifiedMessage));
                         if (logger.isTraceEnabled()) {
                             logger.trace(String.format("Sent to redis:\n%s", addedMessage));
                         }
@@ -220,11 +220,11 @@ public class RedisChat {
             httpServer.close().result();
         }
 
-        public void broadcastMessage(ChatMessage message) {
+        public void broadcastMessage(RedisChatMessage message) {
             vertx.eventBus().publish(BROADCAST_CHANNEL, message.toSerializedString());
         }
 
-        public void directMessage(ChatMessage message) {
+        public void directMessage(RedisChatMessage message) {
             vertx.eventBus().publish(message.channel, message.toSerializedString());
         }
     }
@@ -244,7 +244,7 @@ public class RedisChat {
             logger.info(String.format("Connection '%s' established to Redis on localhost:18090", connectionName));
 
             if (offset == null) {
-                ChatMessage head = add(ChatMessage.initializer());
+                RedisChatMessage head = add(RedisChatMessage.initializer());
                 this.offset = head.id;
             } else {
                 this.offset = offset;
@@ -254,14 +254,14 @@ public class RedisChat {
         /**
          * Append a message to the Redis stream 'messages'.
          */
-        public ChatMessage add(ChatMessage message) {
+        public RedisChatMessage add(RedisChatMessage message) {
             //XADD messages * messageType "Broadcast" socketId "__vertx.ws.de4a22c7-e925-4c65-ac22-820a964c7041" message "Hi there"
             Map<String, String> messageMap = message.toMap();
             String id = connection.sync().xadd("messages", messageMap);
             return message.withId(id);
         }
 
-        public List<ChatMessage> read() {
+        public List<RedisChatMessage> read() {
             return read(Duration.ZERO);
         }
 
@@ -269,23 +269,23 @@ public class RedisChat {
          * Return a set of messages from the Redis stream 'messages' (blocking for duration).
          * Intended to be called in a loop with a short duration.
          */
-        public List<ChatMessage> read(Duration timeout) {
+        public List<RedisChatMessage> read(Duration timeout) {
             //XREAD BLOCK 0 STREAMS messages 1631516018887-0
             XReadArgs.StreamOffset<String> streamOffset = XReadArgs.StreamOffset.from("messages", offset);
             RedisCommands<String, String> sync = connection.sync();
             sync.setTimeout(timeout);
-            List<ChatMessage> messagesList = sync.xread(XReadArgs.Builder.block(timeout), streamOffset).stream().map(ChatMessage::fromStreamMessage).collect(Collectors.toList());
+            List<RedisChatMessage> messagesList = sync.xread(XReadArgs.Builder.block(timeout), streamOffset).stream().map(RedisChatMessage::fromStreamMessage).collect(Collectors.toList());
             if (messagesList.size() > 0) {
                 this.offset = messagesList.get(messagesList.size() - 1).id;
             }
             return messagesList;
         }
 
-        public ChatMessage readHead() {
+        public RedisChatMessage readHead() {
             //XREVRANGE messages + - COUNT 1
             List<StreamMessage<String, String>> messages = connection.sync().xrevrange("messages", Range.unbounded(), Limit.from(1));
             if (messages != null && messages.size() > 0) {
-                return ChatMessage.fromStreamMessage(messages.get(0));
+                return RedisChatMessage.fromStreamMessage(messages.get(0));
             } else {
                 return null;
             }
@@ -298,26 +298,26 @@ public class RedisChat {
         }
     }
 
-    private enum ChatMessageType {
+    private enum RedisChatMessageType {
         None,
         Broadcast,
         Initialize, Direct;
 
-        public static ChatMessageType valueOfSafe(String messageTypeName) {
+        public static RedisChatMessageType valueOfSafe(String messageTypeName) {
             if (messageTypeName == null || messageTypeName.length() == 0) {
-                return ChatMessageType.None;
+                return RedisChatMessageType.None;
             } else {
                 try {
-                    return ChatMessageType.valueOf(messageTypeName);
+                    return RedisChatMessageType.valueOf(messageTypeName);
                 } catch (IllegalArgumentException e) {
-                    return ChatMessageType.None;
+                    return RedisChatMessageType.None;
                 }
             }
         }
     }
 
-    private static class ChatMessage {
-        private final ChatMessageType messageType;
+    private static class RedisChatMessage {
+        private final RedisChatMessageType messageType;
         /**
          * The Redis Streams identifier of the message. Composed of a timestamp and an incrementing integer e.g. 123891293129381-1.
          */
@@ -336,7 +336,7 @@ public class RedisChat {
         private final String message;
 
 
-        public ChatMessage(ChatMessageType messageType, String id, String socketId, String channel, String message) {
+        public RedisChatMessage(RedisChatMessageType messageType, String id, String socketId, String channel, String message) {
             this.messageType = messageType;
             this.id = id;
             this.socketId = socketId;
@@ -344,25 +344,25 @@ public class RedisChat {
             this.message = message;
         }
 
-        public static ChatMessage initializer() {
-            return new ChatMessage(ChatMessageType.Initialize, "", "", "", "");
+        public static RedisChatMessage initializer() {
+            return new RedisChatMessage(RedisChatMessageType.Initialize, "", "", "", "");
         }
 
-        public static ChatMessage broadcastMessage(String socketId, String message) {
-            return new ChatMessage(ChatMessageType.Broadcast, "", socketId, WebSocketServer.BROADCAST_CHANNEL, message);
+        public static RedisChatMessage broadcastMessage(String socketId, String message) {
+            return new RedisChatMessage(RedisChatMessageType.Broadcast, "", socketId, WebSocketServer.BROADCAST_CHANNEL, message);
         }
 
-        public static ChatMessage directMessage(String socketId, String channel, String message) {
-            return new ChatMessage(ChatMessageType.Direct, "", socketId, channel, message);
+        public static RedisChatMessage directMessage(String socketId, String channel, String message) {
+            return new RedisChatMessage(RedisChatMessageType.Direct, "", socketId, channel, message);
         }
 
         public String toSerializedString() {
             return String.format("%s|||%s|||%s|||%s|||%s", messageType.name(), id, socketId, channel, message);
         }
 
-        public static ChatMessage fromSerializedString(String chatMessageString) {
+        public static RedisChatMessage fromSerializedString(String chatMessageString) {
             String[] parts = chatMessageString.split("\\|\\|\\|");
-            return new ChatMessage(ChatMessageType.valueOf(parts[0]), parts[1], parts[2], parts[3], parts[4]);
+            return new RedisChatMessage(RedisChatMessageType.valueOf(parts[0]), parts[1], parts[2], parts[3], parts[4]);
         }
 
         public Map<String, String> toMap() {
@@ -374,15 +374,15 @@ public class RedisChat {
             return messageMap;
         }
 
-        public static ChatMessage fromStreamMessage(StreamMessage<String, String> message) {
+        public static RedisChatMessage fromStreamMessage(StreamMessage<String, String> message) {
             if (message == null) {
                 return null;
             }
-            return new ChatMessage(ChatMessageType.valueOfSafe(message.getBody().get("messageType")), message.getId(), message.getBody().get("socketId"), message.getBody().get("channel"), message.getBody().get("message"));
+            return new RedisChatMessage(RedisChatMessageType.valueOfSafe(message.getBody().get("messageType")), message.getId(), message.getBody().get("socketId"), message.getBody().get("channel"), message.getBody().get("message"));
         }
 
-        public ChatMessage withId(String id) {
-            return new ChatMessage(messageType, id, socketId, channel, message);
+        public RedisChatMessage withId(String id) {
+            return new RedisChatMessage(messageType, id, socketId, channel, message);
         }
 
         @Override
