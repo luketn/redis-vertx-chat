@@ -25,23 +25,22 @@ const debugLog = debug ? console.log : () => {};
 
 export default function () {
     //const url = 'ws://echo.websocket.org'; // public websocket server for quick test
-    const url = 'ws://192.168.0.51:8080/';    // local websocket server
+    const url = 'ws://localhost:8080/';    // local websocket server
 
     let username = 'k6-' + uuidv4();
     const res = ws.connect(url, null, (socket) => {
         socket.on('open', function open() {
             debugLog('connected');
-            socket.send("Identify:" + username);
+            socket.send('{"messageType":"Identify","value":"'+username+'"}');
         });
 
         socket.on('message', function message(data) {
             debugLog('Message received: ', data);
-            if (data.indexOf('IdentifiedAs:') === 0) {
-                let username = data.substr('IdentifiedAs:'.length);
-                debugLog('Identified as ' + username);
+            if (data.indexOf('IdentifiedAs') !== -1) {
+                debugLog('Identified as ' + data);
 
                 socket.setInterval(function interval() {
-                    let broadcastMessage = 'Sent at ' + new Date() + ', R=' + Math.floor(Math.random() * 100);
+                    let broadcastMessage = '{"messageType":"Broadcast","value":"Sent at ' + new Date() + ', R=' + Math.floor(Math.random() * 100) + '"}';
                     socket.send(broadcastMessage);
                     debugLog('Message broadcasted: ', broadcastMessage);
                 }, 1000);
