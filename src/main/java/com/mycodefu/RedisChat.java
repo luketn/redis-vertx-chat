@@ -34,6 +34,12 @@ public class RedisChat {
     private static final Vertx vertx = Vertx.vertx(new VertxOptions().setWorkerPoolSize(100));
     public static final ObjectMapper jsonObjectMapper = new ObjectMapper();
 
+    public static final String REDIS_CONNECTION_STRING = getEnvironmentVariable("REDIS_CONNECTION_STRING", "redis://localhost:18090/0");
+    public static final String REDIS_STREAM_KEY = getEnvironmentVariable("REDIS_STREAM_KEY", "messages");
+
+    public static final int LISTEN_PORT = getEnvironmentVariable("LISTEN_PORT", 8080);
+    public static final int OFFLINE_CATCHUP_MAX_TIME_PERIOD_SECONDS = getEnvironmentVariable("OFFLINE_CATCHUP_MAX_TIME_PERIOD_SECONDS", 60_000);
+
     public static void main(String[] args) {
         RedisMessageStream redisMessageSenderStream = new RedisMessageStream("Message Sender");
         WebSocketServer webSocketServer = new WebSocketServer(vertx, redisMessageSenderStream);
@@ -76,8 +82,6 @@ public class RedisChat {
         }, "RedisReaderThread");
         readerThread.start();
 
-        logger.info("Listening for connections on http://localhost:8080 and ws://localhost:8080!");
-
         //This shutdown hook will run _after_ vert.x's installed shutdown hook, meaning the web socket server will have been shut down along with all of its sockets by the time this runs.
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
@@ -101,6 +105,22 @@ public class RedisChat {
                 e.printStackTrace();
             }
         }, "ShutdownHookThread"));
+    }
+
+    private static int getEnvironmentVariable(String name, Integer defaultValue) {
+        String rawString = getEnvironmentVariable(name, defaultValue.toString());
+        try {
+            return Integer.parseInt(rawString);
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+    private static String getEnvironmentVariable(String name, String defaultValue) {
+        String value = System.getenv(name);
+        if (StringUtil.isNullOrEmpty(value)){
+            value = defaultValue;
+        }
+        return value;
     }
 
     private static class WebSocketServer implements AutoCloseable {
@@ -135,7 +155,7 @@ public class RedisChat {
                 //Limit the range to 60s, this should only be used for a few seconds range (i.e. for connection dropouts etc..)
                 long headMillis = Long.parseUnsignedLong(head.id.split("-")[0]);
                 long lastReadMillis = Long.parseUnsignedLong(lastReadDatastoreId.split("-")[0]);
-                if (headMillis-lastReadMillis > 60_000) {
+                if (headMillis-lastReadMillis > OFFLINE_CATCHUP_MAX_TIME_PERIOD_SECONDS) {
                     //The user has been offline for too long, they will just get new messages from the head.
                     return Future.succeededFuture(new ArrayList<>());
                 } else {
@@ -242,8 +262,9 @@ public class RedisChat {
             });
 
             httpServer.requestHandler(router);
-            httpServer.listen(8080).result();
-            logger.info("Listening for web socket connections on 8080!");
+            httpServer.listen(LISTEN_PORT).result();
+
+            logger.info(String.format("Listening for connections on http://0.0.0.0:%d and ws://0.0.0.0:%d!", LISTEN_PORT, LISTEN_PORT));
         }
 
         private void writeMessage(ServerWebSocket serverWebSocket, BrowserChatMessage message) {
@@ -283,9 +304,9 @@ public class RedisChat {
         }
 
         public RedisMessageStream(String offset, String connectionName) {
-            redisClient = RedisClient.create("redis://localhost:18090/0");
+            redisClient = RedisClient.create(REDIS_CONNECTION_STRING);
             connection = redisClient.connect();
-            logger.info(String.format("Connection '%s' established to Redis on localhost:18090", connectionName));
+            logger.info(String.format("Connection '%s' established to Redis!", connectionName));
 
             if (offset == null) {
                 RedisChatMessage head = add(RedisChatMessage.initializer());
@@ -301,7 +322,7 @@ public class RedisChat {
         public RedisChatMessage add(RedisChatMessage message) {
             //XADD messages * messageType "Broadcast" socketId "__vertx.ws.de4a22c7-e925-4c65-ac22-820a964c7041" message "Hi there"
             Map<String, String> messageMap = message.toRedisMessage();
-            String id = connection.sync().xadd("messages", messageMap);
+            String id = connection.sync().xadd(REDIS_STREAM_KEY, messageMap);
             return message.withId(id);
         }
 
@@ -315,7 +336,7 @@ public class RedisChat {
          */
         public List<RedisChatMessage> read(Duration timeout) {
             //XREAD BLOCK 0 STREAMS messages 1631516018887-0
-            XReadArgs.StreamOffset<String> streamOffset = XReadArgs.StreamOffset.from("messages", offset);
+            XReadArgs.StreamOffset<String> streamOffset = XReadArgs.StreamOffset.from(REDIS_STREAM_KEY, offset);
             RedisCommands<String, String> sync = connection.sync();
             sync.setTimeout(timeout);
             List<RedisChatMessage> messagesList = sync.xread(XReadArgs.Builder.block(timeout), streamOffset).stream().map(RedisChatMessage::fromRedisMessage).collect(Collectors.toList());
@@ -329,7 +350,7 @@ public class RedisChat {
             //XRANGE messages 1631516018887-0 1631516018888-0
             Range<String> idRange = Range.create(fromId, toId);
             RedisCommands<String, String> sync = connection.sync();
-            List<RedisChatMessage> messagesList = sync.xrange("messages", idRange, Limit.from(limit)).stream().map(RedisChatMessage::fromRedisMessage).collect(Collectors.toList());
+            List<RedisChatMessage> messagesList = sync.xrange(REDIS_STREAM_KEY, idRange, Limit.from(limit)).stream().map(RedisChatMessage::fromRedisMessage).collect(Collectors.toList());
             if (messagesList.size() > 0) {
                 this.offset = messagesList.get(messagesList.size() - 1).id;
             }
@@ -338,7 +359,7 @@ public class RedisChat {
 
         public RedisChatMessage readHead() {
             //XREVRANGE messages + - COUNT 1
-            List<StreamMessage<String, String>> messages = connection.sync().xrevrange("messages", Range.unbounded(), Limit.from(1));
+            List<StreamMessage<String, String>> messages = connection.sync().xrevrange(REDIS_STREAM_KEY, Range.unbounded(), Limit.from(1));
             if (messages != null && messages.size() > 0) {
                 return RedisChatMessage.fromRedisMessage(messages.get(0));
             } else {

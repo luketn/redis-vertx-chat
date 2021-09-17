@@ -122,7 +122,8 @@ new function () {
 
     function addMessageFromBroadcastOrDirect(data) {
         localStorage.setItem("lastReadDatastoreId", data.datastoreId);
-        addMessage(data.from + ": " + data.value);
+        let message = (data.from ? data.from : "(anonymous)") + ": " + data.value;
+        addMessage(message);
     }
 
     var onMessage = function (event) {
@@ -214,6 +215,12 @@ new function () {
                     if (indexOfSpace !== -1) {
                         to = msg.substr(1, indexOfSpace - 1);
                         msg = msg.substr(indexOfSpace + 1);
+                    } else {
+                        msg = "";
+                    }
+                    if (msg === "") {
+                        alert('No message specified to ' + to + '. Type a space after their name and then your message!')
+                        return;
                     }
                     ws.send(JSON.stringify({
                         messageType: "Direct",
