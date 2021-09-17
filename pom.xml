@@ -11,6 +11,7 @@
     <properties>
         <maven.compiler.source>11</maven.compiler.source>
         <maven.compiler.target>11</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
     <dependencies>
@@ -58,7 +59,7 @@
                             <goal>single</goal>
                         </goals>
                         <configuration>
-                            <finalName>${project.build.finalName}</finalName>
+<!--                            <finalName>${project.build.finalName}</finalName>-->
                             <appendAssemblyId>false</appendAssemblyId>
                             <descriptors>
                                 <descriptor>assembly.xml</descriptor>
