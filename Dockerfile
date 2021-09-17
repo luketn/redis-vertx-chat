@@ -25,5 +25,5 @@ FROM ${RUNTIME_IMAGE}
 COPY --from=build target/redis-vertx-chat/redis-vertx-chat/lib/ /app/lib/
 COPY --from=build target/redis-vertx-chat/redis-vertx-chat/redis-vertx-chat.jar /app/redis-vertx-chat.jar
 WORKDIR /app
-CMD ["java", "-jar", "redis-vertx-chat.jar"]
+CMD ["java", "-cp", ".:lib/*", "com.mycodefu.RedisChat"]
 #############################################################################################
