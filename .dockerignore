@@ -1,0 +1,10 @@
+*.sh
+*.md
+*.js
+*.log
+.gitignore
+data/*
+docs/*
+.idea/*
+target/*
+target/*
